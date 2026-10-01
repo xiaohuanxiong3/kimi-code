@@ -12,8 +12,15 @@
  * `question` interaction it calls `conn.requestPermission(...)`, maps the
  * response through the pure mappers in `./approval` / `./question`, and
  * settles the parked request via `session.interactions.respond(id, ...)`.
+ *
+ * Every outbound request carries `_meta: { agentId }` (sourced from the
+ * interaction's `agentId` tag, which the engine sets for both the main agent
+ * and subagents) so the client can tell main-agent prompts apart from
+ * subagent ones; the tag is absent only for engine paths that never tag
+ * agent identity, in which case `_meta` is omitted.
  */
 
+import { INTERACTION_TAG_AGENT_ID } from '@moonshot-ai/agent-core-v2';
 import type {
   Interaction,
   QuestionAnswers,
@@ -39,6 +46,16 @@ import {
   questionItemToPermissionOptions,
   questionRequestToElicitationParams,
 } from './question';
+
+/**
+ * Vendor `_meta` payload attached to every outbound interaction request
+ * (`request_permission` top level + its `toolCall`, and `elicitation/create`).
+ * Sourced from the interaction's tags; add new identity fields here and set
+ * them in `dispatch` — the handlers just forward the object opaquely.
+ */
+type InteractionRequestMeta = {
+  agentId: string;
+};
 
 export class AcpInteractionBridge {
   /** Ids the bridge has already begun handling — guards against re-entry. */
@@ -96,13 +113,16 @@ export class AcpInteractionBridge {
     const respond = (response: unknown): Promise<void> =>
       this.session.interactions.respond(interaction.id, response);
     try {
+      const agentIdTag = interaction.tags[INTERACTION_TAG_AGENT_ID];
+      const meta: InteractionRequestMeta | undefined =
+        typeof agentIdTag === 'string' ? { agentId: agentIdTag } : undefined;
       if (interaction.kind === 'approval') {
-        const response = await this.handleApproval(interaction.payload as ApprovalRequest);
+        const response = await this.handleApproval(interaction.payload as ApprovalRequest, meta);
         await respond(response);
         return;
       }
       if (interaction.kind === 'question') {
-        const result = await this.handleQuestion(interaction.payload as QuestionRequest);
+        const result = await this.handleQuestion(interaction.payload as QuestionRequest, meta);
         await respond(result);
       }
     } catch (error) {
@@ -135,14 +155,18 @@ export class AcpInteractionBridge {
    * RPC failure resolves with `decision: 'rejected'` — rejecting on failure is
    * strictly safer than approving when the client cannot confirm intent.
    */
-  private async handleApproval(req: ApprovalRequest): Promise<ApprovalResponse> {
-    const toolCall = buildPermissionToolCallUpdate(req);
+  private async handleApproval(
+    req: ApprovalRequest,
+    meta?: InteractionRequestMeta,
+  ): Promise<ApprovalResponse> {
+    const toolCall = { ...buildPermissionToolCallUpdate(req), _meta: meta };
     const options = approvalRequestToPermissionOptions(req);
     try {
       const response = await this.conn.requestPermission({
         sessionId: this.sessionId,
         options: [...options],
         toolCall,
+        _meta: meta,
       });
       return attachSelectedLabel(
         response,
@@ -176,7 +200,10 @@ export class AcpInteractionBridge {
    * `null` so the tool takes its canonical "user dismissed" branch —
    * strictly safer than fabricating an answer.
    */
-  private async handleQuestion(req: QuestionRequest): Promise<QuestionAnswers | null> {
+  private async handleQuestion(
+    req: QuestionRequest,
+    meta?: InteractionRequestMeta,
+  ): Promise<QuestionAnswers | null> {
     const questions = req.questions;
     if (questions.length === 0) {
       log.warn('acp: handleQuestion received empty questions array', {
@@ -189,9 +216,10 @@ export class AcpInteractionBridge {
       req.turnId !== undefined ? acpToolCallId(req.turnId, rawToolCallId) : rawToolCallId;
     if (this.elicitationForm) {
       try {
-        const response = await this.conn.createElicitation(
-          questionRequestToElicitationParams(questions, this.sessionId, toolCallId),
-        );
+        const response = await this.conn.createElicitation({
+          ...questionRequestToElicitationParams(questions, this.sessionId, toolCallId),
+          _meta: meta,
+        });
         return elicitationResponseToQuestionAnswers(questions, response);
       } catch (error) {
         log.warn('acp: elicitation/create failed; falling back to request_permission', {
@@ -217,7 +245,9 @@ export class AcpInteractionBridge {
           toolCallId,
           title: 'AskUserQuestion',
           content: [{ type: 'content', content: { type: 'text', text: q.question } }],
+          _meta: meta,
         },
+        _meta: meta,
       });
       return outcomeToQuestionAnswer(q, response);
     } catch (error) {

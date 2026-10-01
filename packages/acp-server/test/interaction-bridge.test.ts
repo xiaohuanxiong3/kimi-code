@@ -365,4 +365,110 @@ describe('AcpInteractionBridge', () => {
     expect(session.responses).toEqual([{ id: 'question-el-1', response: { 'Pick one': 'B' } }]);
     bridge.dispose();
   });
+
+  it('forwards the subagent agentId tag as _meta on approval requests', async () => {
+    const session = makeFakeSession();
+    const { conn, calls } = makeFakeConn(() => ({
+      outcome: { outcome: 'selected', optionId: 'approve_once' },
+    }));
+    const subagentApproval: Interaction = {
+      ...approvalInteraction,
+      id: 'approval-sub',
+      tags: { agentId: 'task-1', turnId: 3 },
+    };
+    session.setPending([subagentApproval]);
+    const bridge = new AcpInteractionBridge(conn, session.handle, SESSION_ID);
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.['_meta']).toEqual({ agentId: 'task-1' });
+    expect((calls[0]?.['toolCall'] as Record<string, unknown>)['_meta']).toEqual({
+      agentId: 'task-1',
+    });
+    bridge.dispose();
+  });
+
+  it('forwards the main agentId tag as _meta on approval requests', async () => {
+    const session = makeFakeSession();
+    const { conn, calls } = makeFakeConn(() => ({
+      outcome: { outcome: 'selected', optionId: 'approve_once' },
+    }));
+    const mainApproval: Interaction = {
+      ...approvalInteraction,
+      tags: { agentId: 'main', turnId: 3 },
+    };
+    session.setPending([mainApproval]);
+    const bridge = new AcpInteractionBridge(conn, session.handle, SESSION_ID);
+    await flush();
+
+    expect(calls[0]?.['_meta']).toEqual({ agentId: 'main' });
+    bridge.dispose();
+  });
+
+  it('omits _meta when the interaction carries no agentId tag', async () => {
+    const session = makeFakeSession();
+    const { conn, calls } = makeFakeConn(() => ({
+      outcome: { outcome: 'selected', optionId: 'approve_once' },
+    }));
+    session.setPending([approvalInteraction]);
+    const bridge = new AcpInteractionBridge(conn, session.handle, SESSION_ID);
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.['_meta']).toBeUndefined();
+    expect((calls[0]?.['toolCall'] as Record<string, unknown>)['_meta']).toBeUndefined();
+    bridge.dispose();
+  });
+
+  it('forwards agentId as _meta on the question permission fallback', async () => {
+    const session = makeFakeSession();
+    const { conn, calls } = makeFakeConn(() => ({
+      outcome: { outcome: 'selected', optionId: 'q0_opt_0' },
+    }));
+    const subagentQuestion: Interaction = {
+      id: 'question-sub',
+      kind: 'question',
+      payload: {
+        toolCallId: 'tc_q',
+        turnId: 5,
+        questions: [{ question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] }],
+      },
+      tags: { agentId: 'task-1', turnId: 5 },
+      createdAt: 0,
+    };
+    session.setPending([subagentQuestion]);
+    const bridge = new AcpInteractionBridge(conn, session.handle, SESSION_ID);
+    await flush();
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.['_meta']).toEqual({ agentId: 'task-1' });
+    expect((calls[0]?.['toolCall'] as Record<string, unknown>)['_meta']).toEqual({
+      agentId: 'task-1',
+    });
+    bridge.dispose();
+  });
+
+  it('forwards agentId as _meta on elicitation/create', async () => {
+    const session = makeFakeSession();
+    const elicitationCalls: Array<Record<string, unknown>> = [];
+    const { conn } = makeFakeConn(() => ({ outcome: { outcome: 'cancelled' } }));
+    (conn as { createElicitation?: unknown }).createElicitation = async (
+      params: Record<string, unknown>,
+    ) => {
+      elicitationCalls.push(params);
+      return { action: 'accept', content: { q0: 'A' } };
+    };
+    const subagentQuestion: Interaction = {
+      ...questionInteraction,
+      id: 'question-el-sub',
+      tags: { agentId: 'task-1', turnId: 5 },
+    };
+    session.setPending([subagentQuestion]);
+    const bridge = new AcpInteractionBridge(conn, session.handle, SESSION_ID, true);
+    await flush();
+
+    expect(elicitationCalls).toHaveLength(1);
+    expect(elicitationCalls[0]?.['_meta']).toEqual({ agentId: 'task-1' });
+    bridge.dispose();
+  });
 });

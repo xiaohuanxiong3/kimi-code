@@ -10,6 +10,7 @@ import {
   acpBlocksToContentParts,
   acpMcpServersToConfigRecord,
   compressPromptImageParts,
+  displayBlockToAcpContent,
 } from '../src/convert';
 import { solidPng, solidPngBase64 } from './_helpers/png';
 
@@ -87,6 +88,20 @@ describe('acpBlocksToContentParts', () => {
       },
       { type: 'text', text: '<resource uri="memory://note/1">remember this</resource>' },
     ]);
+  });
+});
+
+describe('displayBlockToAcpContent', () => {
+  // Longer than the engine's 50-char command preview, so this test fails if the
+  // projection ever truncates.
+  const longCommand =
+    'npm run build -- --filter @moonshot-ai/acp-server && echo finished_building_all_packages';
+
+  it('projects a command as its complete, untruncated text', () => {
+    expect(displayBlockToAcpContent({ kind: 'command', command: longCommand })).toEqual({
+      type: 'content',
+      content: { type: 'text', text: longCommand },
+    });
   });
 });
 

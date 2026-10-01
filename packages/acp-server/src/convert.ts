@@ -274,6 +274,7 @@ function parseLineRange(suffix: string): string | null {
 /**
  * Project a {@link ToolInputDisplay} block into an ACP {@link ToolCallContent}
  * entry for the tool-call card. Diff/file_io blocks become inline diffs;
+ * command becomes a text content entry carrying the complete command;
  * plan_review becomes a text content entry; everything else yields `null`
  * (the caller drops it).
  */
@@ -293,6 +294,11 @@ export function displayBlockToAcpContent(block: ToolInputDisplay): ToolCallConte
       oldText: block.before,
       newText: block.after,
     };
+  }
+  if (block.kind === 'command') {
+    // Never truncate: this entry is the only place the client can read the
+    // command before it runs.
+    return { type: 'content', content: { type: 'text', text: block.command } };
   }
   if (block.kind === 'plan_review') {
     const text = composePlanContent(block);

@@ -108,12 +108,15 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
   it('runs a tool call and bridges the approval request to the client', async () => {
     const c = await boot({ terminal: true });
     // First model response: a Bash tool call. Second: a short text wrap-up
-    // after the tool result is fed back to the model.
+    // after the tool result is fed back to the model. The command is longer
+    // than the engine's 50-char preview so the assertions below can only pass
+    // when the full command reaches the client.
+    const command = 'echo hello_from_bash && echo padding_past_the_fifty_char_preview_budget';
     scripted!.mockNextResponse({
       type: 'function',
       id: 'call_1',
       name: 'Bash',
-      arguments: '{"command":"echo hello_from_bash"}',
+      arguments: JSON.stringify({ command }),
     });
     scripted!.mockNextText('ran it');
 
@@ -147,8 +150,21 @@ describe('acp-server real prompt turn (scripted LLM)', () => {
     // The default (manual) permission mode asks before running Bash, so the
     // bridge must have forwarded exactly one approval request to the client.
     expect(permissionRequests).toHaveLength(1);
-    const req = permissionRequests[0] as { toolCall?: { toolCallId?: string } };
+    const req = permissionRequests[0] as {
+      toolCall?: {
+        toolCallId?: string;
+        title?: string;
+        content?: Array<{ type?: string; content?: { type?: string; text?: string } }>;
+      };
+    };
     expect(req.toolCall?.toolCallId).toContain('call_1');
+    // The approval prompt carries the complete command as a text content entry
+    // (the engine's `action` only holds the truncated `Running: …` preview).
+    expect(req.toolCall?.title).toBe('Bash');
+    const permissionTexts = (req.toolCall?.content ?? []).map(
+      (entry) => entry.content?.text ?? '',
+    );
+    expect(permissionTexts).toContain(command);
 
     // The terminal tool_call_update must report success and include the
     // command's output.
